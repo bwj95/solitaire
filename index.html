@@ -88,6 +88,17 @@
      the start so no column gets clipped or stranded off-screen. */
   #board.scaled { overflow: auto; }
   #board.scaled .row { justify-content: start; }
+  /* Side / horizontal stacking: tableau becomes 7 rows that each fan across. */
+  .tableau.row.side {
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: none;
+    gap: var(--gap);
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+  .tableau.row.side.lefthand { align-items: flex-end; }
+  .col.side { flex: 0 0 auto; height: var(--ch); }
 
   .slot {
     width: var(--cw); height: var(--ch);
@@ -374,6 +385,14 @@
       <div class="size-head">Card style</div>
       <span class="styles" id="styleChips"></span>
     </div>
+    <div class="opt size-row">
+      <div class="size-head">Hand</div>
+      <span class="styles" id="handChips"></span>
+    </div>
+    <div class="opt size-row">
+      <div class="size-head">Stacking</div>
+      <span class="styles" id="stackChips"></span>
+    </div>
     <hr>
     <div class="opt" data-act="hint">Show a hint</div>
     <div class="opt" data-act="auto" id="autoOpt">Auto-finish <span class="val" id="autoNote"></span></div>
@@ -486,6 +505,9 @@
     large:     "Large print",
     fourcolor: "Four-color"
   };
+  // Deck/waste side (handedness) and tableau stacking direction.
+  const HAND_MODES = { right: "Right", left: "Left" };
+  const STACK_MODES = { "down": "Down", "side-lr": "Side →", "side-rl": "Side ←" };
   // Traditional pip positions (x,y as fractions); pips below the midline are
   // drawn upside-down, as on a real deck.
   const PIP_LAYOUT = {
@@ -504,6 +526,8 @@
   let backTheme = BACK_THEMES[localStorage.getItem("solitaire_back")] ? localStorage.getItem("solitaire_back") : "classic";
   let cardStyle = CARD_STYLES[localStorage.getItem("solitaire_style")] ? localStorage.getItem("solitaire_style") : "classic";
   let textureTheme = TEXTURE_THEMES[localStorage.getItem("solitaire_texture")] ? localStorage.getItem("solitaire_texture") : "none";
+  let handed = HAND_MODES[localStorage.getItem("solitaire_handed")] ? localStorage.getItem("solitaire_handed") : "right";
+  let stackMode = STACK_MODES[localStorage.getItem("solitaire_stack")] ? localStorage.getItem("solitaire_stack") : "down";
   // Card-size multiplier (1.0 = auto-fit; larger = bigger cards for visibility).
   let sizeScale = Math.min(2.2, Math.max(1, parseFloat(localStorage.getItem("solitaire_size") || "1") || 1));
 
@@ -1090,10 +1114,12 @@
     topRow.innerHTML = "";
     tableauRow.innerHTML = "";
 
-    // Foundations left, waste + stock (deck) on the right.
-    // Deck moved to right side per right-handed feedback (less hand coverage over the board).
+    // Top row: foundations on one side, waste + stock (deck) on the other,
+    // a spacer between. Order flips with handedness so the deck sits under the
+    // player's dominant hand (less reaching across the board).
 
-    // --- Foundations ---
+    // --- Foundations (4 home piles, as a group) ---
+    const foundationSlots = [];
     for (const s of SUITS) {
       const slot = document.createElement("div");
       slot.className = "slot";
@@ -1111,13 +1137,12 @@
         ph.innerHTML = '<div class="ghost-suit">' + SUIT_CHAR[s] + "</div>";
         slot.appendChild(ph);
       }
-      topRow.appendChild(slot);
+      foundationSlots.push(slot);
     }
 
     // --- Spacer ---
     const spacer = document.createElement("div");
     spacer.className = "slot";
-    topRow.appendChild(spacer);
 
     // --- Waste ---
     const wasteSlot = document.createElement("div");
@@ -1135,9 +1160,8 @@
       ph.className = "slot placeholder";
       wasteSlot.appendChild(ph);
     }
-    topRow.appendChild(wasteSlot);
 
-    // --- Stock (deck on the right for right-handers) ---
+    // --- Stock (the deck) ---
     const stockSlot = document.createElement("div");
     stockSlot.className = "slot";
     stockSlot.dataset.pile = "stock";
@@ -1150,12 +1174,36 @@
       rec.textContent = state.waste.length ? "↺" : "";
       stockSlot.appendChild(rec);
     }
-    topRow.appendChild(stockSlot);
+
+    if (handed === "left") {
+      // Deck/waste on the left, foundations on the right.
+      topRow.appendChild(stockSlot);
+      topRow.appendChild(wasteSlot);
+      topRow.appendChild(spacer);
+      foundationSlots.forEach(s => topRow.appendChild(s));
+    } else {
+      // Default right-handed: foundations left, deck/waste on the right.
+      foundationSlots.forEach(s => topRow.appendChild(s));
+      topRow.appendChild(spacer);
+      topRow.appendChild(wasteSlot);
+      topRow.appendChild(stockSlot);
+    }
 
     // --- Tableau ---
+    // "down" = classic vertical fan (cards overlap downward).
+    // "side-lr"/"side-rl" = horizontal fan so even a tall, enlarged pile stays
+    // fully visible across its row, left-to-right or right-to-left.
+    const side = stackMode !== "down";
+    const rl = stackMode === "side-rl";
+    tableauRow.classList.toggle("side", side);
+    tableauRow.classList.toggle("lefthand", side && handed === "left");
+    const cwv = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--cw"));
+    const ch = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ch"));
+    const upStep = side ? cwv * 0.36 : ch * 0.26;
+    const downStep = side ? cwv * 0.18 : ch * 0.13;
     for (let i = 0; i < 7; i++) {
       const col = document.createElement("div");
-      col.className = "col";
+      col.className = "col" + (side ? " side" : "");
       col.dataset.pile = "tableau";
       col.dataset.key = i;
       const pile = state.tableau[i];
@@ -1164,13 +1212,24 @@
         ph.className = "slot placeholder";
         col.appendChild(ph);
       }
-      let offset = 0;
-      const ch = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ch"));
-      const upStep = ch * 0.26, downStep = ch * 0.13;
+      // Pre-compute each card's offset along the fan axis.
+      const offs = [];
+      let acc = 0;
+      for (let j = 0; j < pile.length; j++) {
+        offs.push(acc);
+        acc += pile[j].up ? upStep : downStep;
+      }
+      const maxOff = pile.length ? offs[pile.length - 1] : 0;
       for (let j = 0; j < pile.length; j++) {
         const card = pile[j];
         const c = cardEl(card, card.up);
-        c.style.top = offset + "px";
+        if (side) {
+          // right-to-left mirrors positions so the top card lands at the left.
+          c.style.left = (rl ? (maxOff - offs[j]) : offs[j]) + "px";
+          c.style.top = "0px";
+        } else {
+          c.style.top = offs[j] + "px";
+        }
         c.dataset.pile = "tableau";
         c.dataset.key = i;
         c.dataset.index = j;
@@ -1178,9 +1237,14 @@
           c.classList.add("selected");
         }
         col.appendChild(c);
-        offset += card.up ? upStep : downStep;
       }
-      col.style.minHeight = (offset + ch) + "px";
+      if (side) {
+        col.style.width = (maxOff + cwv) + "px";
+        col.style.height = ch + "px";
+        col.style.minHeight = ch + "px";
+      } else {
+        col.style.minHeight = (acc + ch) + "px";
+      }
       tableauRow.appendChild(col);
     }
 
@@ -1258,17 +1322,23 @@
       }
     }
   }
-  function buildStyleChips() {
-    const c = document.getElementById("styleChips");
+  // Generic labelled-chip picker (Card style, Hand, Stacking).
+  function buildChipRow(id, options, current, dataKey) {
+    const c = document.getElementById(id);
     if (!c) return;
     c.innerHTML = "";
-    for (const key in CARD_STYLES) {
+    for (const key in options) {
       const chip = document.createElement("span");
-      chip.className = "stylechip" + (key === cardStyle ? " active" : "");
-      chip.textContent = CARD_STYLES[key];
-      chip.dataset.style = key;
+      chip.className = "stylechip" + (key === current ? " active" : "");
+      chip.textContent = options[key];
+      chip.dataset[dataKey] = key;
       c.appendChild(chip);
     }
+  }
+  function buildStyleChips() {
+    buildChipRow("styleChips", CARD_STYLES, cardStyle, "style");
+    buildChipRow("handChips", HAND_MODES, handed, "hand");
+    buildChipRow("stackChips", STACK_MODES, stackMode, "stack");
   }
   function applySize() {
     const slider = document.getElementById("sizeSlider");
@@ -1283,14 +1353,26 @@
     const board = document.getElementById("board");
     const styles = getComputedStyle(board);
     const padL = parseFloat(styles.paddingLeft), padR = parseFloat(styles.paddingRight);
-    const avail = board.clientWidth - padL - padR;
-    // 7 columns + 6 gaps where gap = 0.14*cw  => avail = cw*(7 + 6*0.14)
-    let fitCw = avail / (7 + 6 * 0.14);
-    fitCw = Math.max(38, Math.min(fitCw, 116));
+    const padT = parseFloat(styles.paddingTop), padB = parseFloat(styles.paddingBottom);
+    const availW = board.clientWidth - padL - padR;
+    let fitCw;
+    if (stackMode === "down") {
+      // 7 columns + 6 gaps where gap = 0.14*cw  => avail = cw*(7 + 6*0.14)
+      fitCw = availW / (7 + 6 * 0.14);
+      fitCw = Math.max(38, Math.min(fitCw, 116));
+    } else {
+      // Side mode: fit the top row + 7 stacked tableau rows into the height,
+      // so all seven piles are visible at once; piles then fan across the width
+      // (board scrolls horizontally if a pile is longer than the screen).
+      const availH = board.clientHeight - padT - padB;
+      const ch = availH / 8.8;           // ≈ topRow(1) + 7 rows + gaps
+      fitCw = Math.min(ch / 1.4, availW / 3.4);
+      fitCw = Math.max(26, Math.min(fitCw, 116));
+    }
     // sizeScale > 1 enlarges cards beyond the fit; the board then scrolls so
-    // every column stays reachable (better for low-vision / older players).
+    // every card stays reachable (better for low-vision / older players).
     const cw = fitCw * sizeScale;
-    board.classList.toggle("scaled", sizeScale > 1.001);
+    board.classList.toggle("scaled", sizeScale > 1.001 || stackMode !== "down");
     const ch = cw * 1.4;
     document.documentElement.style.setProperty("--cw", cw + "px");
     document.documentElement.style.setProperty("--ch", ch + "px");
@@ -1444,15 +1526,17 @@
     press.offsetY = press.y - rect.top;
     press.els = els;
     press.clones = [];
+    const side = stackMode !== "down";
+    const cwv = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--cw"));
     const ch = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ch"));
-    const upStep = ch * 0.26;
+    const step = side ? cwv * 0.36 : ch * 0.26;
     els.forEach((el, i) => {
       el.classList.add("hidden-card");
       const clone = el.cloneNode(true);
       clone.classList.remove("hidden-card", "selected");
       clone.style.position = "absolute";
-      clone.style.left = "0px";
-      clone.style.top = (i * upStep) + "px";
+      clone.style.left = (side ? i * step : 0) + "px";
+      clone.style.top = (side ? 0 : i * step) + "px";
       dragLayer.appendChild(clone);
       press.clones.push(clone);
     });
@@ -1755,6 +1839,22 @@
     localStorage.setItem("solitaire_style", cardStyle);
     buildStyleChips();
     if (state) render();
+  });
+  document.getElementById("handChips").addEventListener("click", (e) => {
+    const chip = e.target.closest(".stylechip"); if (!chip) return;
+    e.stopPropagation();
+    handed = chip.dataset.hand;
+    localStorage.setItem("solitaire_handed", handed);
+    buildStyleChips();
+    resize(); // re-render (alignment of side rows depends on handedness)
+  });
+  document.getElementById("stackChips").addEventListener("click", (e) => {
+    const chip = e.target.closest(".stylechip"); if (!chip) return;
+    e.stopPropagation();
+    stackMode = chip.dataset.stack;
+    localStorage.setItem("solitaire_stack", stackMode);
+    buildStyleChips();
+    resize(); // geometry changes between down/side, so recompute then render
   });
   const sizeSlider = document.getElementById("sizeSlider");
   sizeSlider.addEventListener("click", (e) => e.stopPropagation());
