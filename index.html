@@ -368,6 +368,7 @@
       <input type="range" id="sizeSlider" min="100" max="220" step="5" value="100" aria-label="Card size">
     </div>
     <div class="opt theme-opt">Table <span class="swatches" id="feltSwatches"></span></div>
+    <div class="opt theme-opt">Texture <span class="swatches" id="textureSwatches"></span></div>
     <div class="opt theme-opt">Card back <span class="swatches" id="backSwatches"></span></div>
     <div class="opt size-row">
       <div class="size-head">Card style</div>
@@ -464,6 +465,17 @@
     royal:   { name: "Royal plum",   a: "#7a4fb0", b: "#633f93" }
   };
 
+  // Optional surface textures for the table. "none" falls back to the plain
+  // felt colour above; the others are procedural (no images, keeps it 1 file).
+  // Each `css` is a full CSS `background` value applied to the page.
+  const TEXTURE_THEMES = {
+    none:   { name: "None" },
+    grass:  { name: "Grass",  css: "repeating-linear-gradient(91deg, rgba(0,0,0,0.12) 0 2px, rgba(0,0,0,0) 2px 5px), repeating-linear-gradient(89deg, rgba(255,255,255,0.07) 0 1px, rgba(255,255,255,0) 1px 6px), radial-gradient(circle at 50% 0%, #4a9140 0%, #2f6b2b 100%)" },
+    roots:  { name: "Roots",  css: "repeating-linear-gradient(90deg, rgba(0,0,0,0.14) 0 3px, rgba(0,0,0,0) 3px 10px), repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0 1px, rgba(255,255,255,0) 1px 8px), radial-gradient(ellipse at 35% 12%, #7d5636 0%, #553a24 100%)" },
+    cloth:  { name: "Felt",   css: "repeating-linear-gradient(45deg, rgba(0,0,0,0.06) 0 1px, rgba(0,0,0,0) 1px 3px), repeating-linear-gradient(-45deg, rgba(0,0,0,0.06) 0 1px, rgba(0,0,0,0) 1px 3px), radial-gradient(circle at 50% 0%, #2e7d4f 0%, #245f3c 100%)" },
+    carpet: { name: "Carpet", css: "repeating-linear-gradient(45deg, rgba(255,255,255,0.06) 0 7px, rgba(255,255,255,0) 7px 14px), repeating-linear-gradient(-45deg, rgba(255,255,255,0.06) 0 7px, rgba(255,255,255,0) 7px 14px), radial-gradient(circle at 50% 0%, #6d2433 0%, #4c1824 100%)" }
+  };
+
   // Card face rendering styles — these change the actual layout of the face,
   // not just colours. "pips" draws traditional suit-pip arrangements + emoji
   // court cards; "large" blows up the rank for low-vision players; "fourcolor"
@@ -491,6 +503,7 @@
   let feltTheme = FELT_THEMES[localStorage.getItem("solitaire_felt")] ? localStorage.getItem("solitaire_felt") : "emerald";
   let backTheme = BACK_THEMES[localStorage.getItem("solitaire_back")] ? localStorage.getItem("solitaire_back") : "classic";
   let cardStyle = CARD_STYLES[localStorage.getItem("solitaire_style")] ? localStorage.getItem("solitaire_style") : "classic";
+  let textureTheme = TEXTURE_THEMES[localStorage.getItem("solitaire_texture")] ? localStorage.getItem("solitaire_texture") : "none";
   // Card-size multiplier (1.0 = auto-fit; larger = bigger cards for visibility).
   let sizeScale = Math.min(2.2, Math.max(1, parseFloat(localStorage.getItem("solitaire_size") || "1") || 1));
 
@@ -1198,9 +1211,28 @@
     root.setProperty("--back-a", t.a);
     root.setProperty("--back-b", t.b);
   }
+  function applyTexture() {
+    const t = TEXTURE_THEMES[textureTheme];
+    // "none" (or unknown) clears the inline override so the felt colour shows.
+    document.body.style.background = (t && t.css) ? t.css : "";
+  }
   function buildSwatches() {
     const fc = document.getElementById("feltSwatches");
     const bc = document.getElementById("backSwatches");
+    const tc = document.getElementById("textureSwatches");
+    if (tc) {
+      tc.innerHTML = "";
+      for (const key in TEXTURE_THEMES) {
+        const t = TEXTURE_THEMES[key];
+        const sw = document.createElement("span");
+        sw.className = "swatch" + (key === textureTheme ? " active" : "");
+        // "None" previews the current felt colour; textures preview themselves.
+        sw.style.background = t.css || ("linear-gradient(135deg, " + (FELT_THEMES[feltTheme] || FELT_THEMES.emerald).felt + ", " + (FELT_THEMES[feltTheme] || FELT_THEMES.emerald).dark + ")");
+        sw.title = t.name;
+        sw.dataset.texture = key;
+        tc.appendChild(sw);
+      }
+    }
     if (fc) {
       fc.innerHTML = "";
       for (const key in FELT_THEMES) {
@@ -1709,6 +1741,13 @@
     localStorage.setItem("solitaire_back", backTheme);
     applyBack(); buildSwatches();
   });
+  document.getElementById("textureSwatches").addEventListener("click", (e) => {
+    const sw = e.target.closest(".swatch"); if (!sw) return;
+    e.stopPropagation();
+    textureTheme = sw.dataset.texture;
+    localStorage.setItem("solitaire_texture", textureTheme);
+    applyTexture(); buildSwatches();
+  });
   document.getElementById("styleChips").addEventListener("click", (e) => {
     const chip = e.target.closest(".stylechip"); if (!chip) return;
     e.stopPropagation();
@@ -1733,12 +1772,27 @@
   board.addEventListener("pointerup", onPointerUp);
   board.addEventListener("pointercancel", () => { if (press) { cleanupDrag(); render(); press = null; } });
 
+  // Keep the board fitted on any viewport change, including rotation. Some
+  // browsers report stale dimensions right after orientationchange, so we
+  // re-fit a few times and also listen to the visualViewport for good measure.
   window.addEventListener("resize", resize);
-  window.addEventListener("orientationchange", () => setTimeout(resize, 150));
+  window.addEventListener("orientationchange", () => {
+    resize();
+    setTimeout(resize, 150);
+    setTimeout(resize, 400);
+  });
+  if (window.screen && screen.orientation && screen.orientation.addEventListener) {
+    screen.orientation.addEventListener("change", () => { resize(); setTimeout(resize, 200); });
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", resize);
+  }
+  window.addEventListener("pageshow", resize);
 
   // ---- Boot ------------------------------------------------------------
   applyFelt();
   applyBack();
+  applyTexture();
   buildSwatches();
   buildStyleChips();
   applySize();
